@@ -1,0 +1,149 @@
+# 🎬 Don Claude 3D
+
+**Estudio de escenarios 3D interactivos, 100% en el navegador.**
+
+Editor 3D sin instalación para crear escenarios interactivos: formación y
+prevención de riesgos laborales, museos y recorridos virtuales,
+presentaciones de alumnos o escenarios para webinars. Construye la escena,
+añade animaciones e interacción, pruébala en modo jugador (con multijugador
+opcional) y expórtala como un videojuego `.html` independiente para
+compartir o incrustar donde quieras.
+
+🔗 Demo en vivo: [escenas-3d.infodocencia.net](https://escenas-3d.infodocencia.net/)
+
+![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+
+## Características
+
+- **Editor visual** con gizmos de mover/rotar/escalar, historial (Ctrl+Z),
+  ajuste a bordes cercanos y límites de escenario configurables.
+- **Biblioteca de formas y prefabs** (mesas, tablones, cajas, personaje...),
+  clonado en serie con desplazamiento/rotación/escala en patrón.
+- **Importación de modelos `.glb`**, incluidas sus animaciones — con
+  corrección de orientación si el modelo "camina de espaldas".
+- **Formas libres extruidas** (editor de nodos tipo Bézier), incluida
+  extrusión siguiendo un camino (path sweep).
+- **Sistema de acciones** por objeto (mover, rotar, esperar, aparecer/
+  desaparecer, animar, girar sin parar...) encadenables y en paralelo,
+  con coordenadas relativas — sirve para ascensores, puertas, cintas
+  transportadoras, etc.
+- **Colisionadores simples**: personaje (detector), sólido, suelo/rampa
+  (incluye plataformas en movimiento que "arrastran" al jugador), zona de
+  riesgo, volumen.
+- **Objetos interactivos**: texto al acercarse, lectura con tecla E,
+  enlaces, o preguntas de elección múltiple con puntuación y acciones
+  propias por respuesta.
+- **Línea de tiempo** tipo "película guionizada", con grabación de vídeo.
+- **Modo jugador**: control en primera/tercera persona (WASD + ratón,
+  flechas de teclado, o joystick y botones táctiles en móvil), registro
+  de eventos de riesgo, puntuación, y bloqueo de orientación en móvil
+  mientras se juega (si el navegador lo permite).
+- **Multijugador opcional**: código de sala compartido, chat, avatares con
+  textura propia — vía WebRTC P2P con respaldo automático por servidor si
+  la conexión directa no cuadra (ver [Multijugador](#multijugador-opcional)).
+- **Compartir por enlace** (`?sala=`) con el proyecto persistido en el
+  servidor y PIN de edición opcional.
+- **Exportación a videojuego `.html` independiente**, sin el editor, listo
+  para compartir o incrustar (el multijugador no se incluye en este
+  archivo exportado).
+- **Guardar/cargar proyecto** en un único `.json` (incluye modelos,
+  imágenes, audio y vídeo en base64).
+- **Bóveda celeste nocturna (opcional)**: activable desde "Ambiente del
+  escenario". Cuando el Sol del escenario está bajo, aparecen ~750 estrellas
+  reales (posiciones J2000, con las líneas de las 88 constelaciones IAU) más
+  un fondo decorativo de relleno, y la Luna con su altura, posición y fase
+  (iluminación real, no solo un icono) para el instante elegido — automático
+  (reloj del sistema) o manual (fecha/hora/huso fijos, para "ver el cielo de
+  esa noche" sin depender del reloj real). Se puede subir una foto real de la
+  Luna (equirectangular) para sustituir la textura genérica generada por
+  defecto. Incluye lluvias de meteoros por fecha real (Cuadrántidas,
+  Líridas, Eta Acuáridas, Perseidas, Oriónidas, Leónidas, Gemínidas,
+  Úrsidas) y un puntero de constelaciones: en el editor, la tecla **L**
+  (puntero láser existente) también resalta y nombra la constelación a la
+  que apuntas si el cielo está despejado; en el videojuego exportado (que no
+  tiene multijugador) la tecla **L** se dedica por completo a esto. Se
+  incluye todo en el videojuego exportado.
+- **Grillo nocturno**: prefab "🦗 Grillo" en la biblioteca — canto
+  sintetizado por código (sin archivo de audio), activo solo de noche, con
+  volumen según distancia al jugador.
+
+## Cómo usarlo
+
+Es una aplicación de una sola página. Para el editor y el modo jugador en
+solitario no hace falta nada más que abrir `index.html` en un navegador
+(local o subido a cualquier hosting estático) — usa
+[Three.js](https://threejs.org/) vía CDN (`unpkg.com`) a través de un
+`importmap`, así que necesita conexión a internet la primera vez que carga
+cada sesión.
+
+Para el **multijugador** (salas, chat, compartir proyecto por enlace) hace
+falta servir el sitio desde un servidor con PHP — ver más abajo.
+
+## Estructura del proyecto
+
+```
+index.html          Editor + modo jugador + exportador (todo en un archivo)
+multi/
+  mundo-multi.js     Módulo cliente del multijugador (WebRTC + respaldo por servidor)
+  presencia.php       Descubrimiento de peers en una sala (quién está conectado ahora)
+  signal.php          Señalización WebRTC (offer/answer/ICE) entre dos navegadores
+  chat.php            Retransmisión de chat y respaldo de posición cuando el P2P no conecta
+  proyecto.php         Guarda/sirve el proyecto asociado a un código de sala (?sala=), con PIN opcional
+```
+
+No hay build ni dependencias de Node/npm: `index.html` se edita y se sirve
+tal cual. Los `.php` son ficheros sueltos sin framework ni base de datos
+(guardan su estado en archivos JSON efímeros bajo `multi/data/`, que se
+crean solos la primera vez que se usan).
+
+## Requisitos
+
+- Cualquier hosting con **PHP 7.4+** para el multijugador y compartir por
+  enlace (el editor y el modo jugador en solitario funcionan igual sin
+  PHP, sirviendo el HTML de forma estática).
+- El directorio `multi/data/` debe ser escribible por PHP (se crea solo,
+  pero el proceso de PHP necesita permiso de escritura en `multi/`).
+- Revisa `post_max_size`/`upload_max_filesize` en el `php.ini` de tu
+  hosting si vas a compartir proyectos con modelos `.glb` o vídeo grandes
+  (van en base64 dentro del JSON del proyecto).
+
+## Multijugador (opcional)
+
+El multijugador usa WebRTC punto a punto: dos navegadores en la misma
+sala se conectan directamente entre sí (usando un STUN público de Google
+para descubrir su IP), y la posición/chat viajan sin pasar por el
+servidor. Si esa conexión directa no cuadra (redes muy distintas — datos
+móviles + wifi, NAT restrictivo de un centro educativo, etc. — y sin
+servidor TURN configurado), el chat y la posición caen automáticamente a
+un respaldo más lento vía `chat.php`, así que sigue siendo utilizable
+aunque no en tiempo real perfecto.
+
+Para tiempo real fiable entre redes muy distintas hace falta un servidor
+TURN (por ejemplo [coturn](https://github.com/coturn/coturn),
+autoalojado, o un servicio como Metered/Twilio) — no viene configurado
+por defecto.
+
+## Limitaciones conocidas
+
+- El bloqueo de orientación en Modo jugar (móvil) usa la Screen
+  Orientation API: no está soportada en Safari/iOS, y algunos navegadores
+  exigen pantalla completa para permitirlo. Cuando no está disponible,
+  simplemente no se bloquea (sin romper nada).
+- El multijugador necesita PHP; no funciona abriendo `index.html`
+  directamente desde el disco (`file://`) ni en hosting puramente
+  estático.
+- El HTML exportado como videojuego independiente no incluye
+  multijugador ni el editor — solo la escena jugable.
+
+## Créditos
+
+Construido sobre [Three.js](https://threejs.org/). Un proyecto de
+[Infodocencia](https://escenas-3d.infodocencia.net/).
+
+Gran parte del desarrollo de este proyecto — funcionalidades, corrección de
+errores y arquitectura del multijugador — se ha hecho con la asistencia de
+[Claude](https://claude.com) (Anthropic).
+
+## Licencia
+
+[MIT](LICENSE).
