@@ -1,0 +1,14 @@
+{
+  "name": "escenas3d-tests",
+  "private": true,
+  "type": "module",
+  "description": "Suite de pruebas automatizadas (Node.js) para Don Claude 3D -- motor JS (editor + juego exportado) y backend PHP del multijugador (via WASM). Ver README.md.",
+  "scripts": {
+    "test": "node run-all.mjs"
+  },
+  "devDependencies": {
+    "three": "^0.160.0",
+    "@php-wasm/node": "^3.1.46",
+    "@php-wasm/universal": "^3.1.46"
+  }
+}
