@@ -1222,7 +1222,17 @@ function buildNightSky() {
   nightSkyMoonFallbackTexture = buildFallbackMoonTexture();
   var moonMat = new THREE.MeshStandardMaterial({ map: nightSkyMoonFallbackTexture, color: 0xffffff, roughness: 1, metalness: 0, fog: false });
   nightSkyMoonMesh = new THREE.Mesh(moonGeo, moonMat);
-  nightSkyMoonMesh.layers.enable(NIGHT_SKY_LIGHT_LAYER);
+  // OJO: layers.set() (no .enable()) -- así la Luna sale COMPLETAMENTE de la capa 0 por defecto,
+  // donde viven "hemi" (HemisphereLight, intensidad 0.9 fija, nunca se atenúa de noche) y "dirLight"
+  // (el sol del ciclo día/noche). Con .enable() la esfera se quedaba en ambas capas -- esas luces
+  // ambientales, al no depender de la dirección real Sol-Luna, iluminaban la esfera de forma casi
+  // pareja por todos lados (más clara arriba por el cielo, algo más oscura abajo por el "suelo" del
+  // hemisferio) y esa media luz uniforme tapaba el terminador real: la Luna se veía siempre como una
+  // bola gris deslucida y casi llena, con la misma pinta tuviera o no textura propia y fuera cual
+  // fuera la fase calculada. Ahora la esfera SOLO está en NIGHT_SKY_LIGHT_LAYER, así que la única luz
+  // que la toca es nightSkyMoonLight (más abajo), colocada según la posición real del Sol -- el lado
+  // iluminado y el terminador ya coinciden con moonPhaseName().
+  nightSkyMoonMesh.layers.set(NIGHT_SKY_LIGHT_LAYER);
   if (sceneEnvironment.moonTextureBase64) {
     (function () {
       var img = new Image();
@@ -1238,7 +1248,13 @@ function buildNightSky() {
   }
   nightSkyMoonLight = new THREE.DirectionalLight(0xfff6e6, 1.2);
   nightSkyMoonLight.layers.set(NIGHT_SKY_LIGHT_LAYER);
-  nightSkyGroup.add(nightSkyMoonMesh, nightSkyMoonLight, nightSkyMoonLight.target);
+  // Relleno tenue (simula "luz cenicienta"/earthshine) para que el lado no iluminado de la Luna no
+  // quede negro puro -- sin esto, al aislarla de "hemi", una Luna nueva/creciente fina se veía como
+  // un simple recorte sin volumen. Muy baja intensidad a propósito: debe notarse la fase, no taparla.
+  var nightSkyMoonFill = new THREE.AmbientLight(0x2a3550, 0.16);
+  nightSkyMoonFill.layers.set(NIGHT_SKY_LIGHT_LAYER);
+  nightSkyGroup.add(nightSkyMoonMesh, nightSkyMoonLight, nightSkyMoonLight.target, nightSkyMoonFill);
+  camera.layers.enable(NIGHT_SKY_LIGHT_LAYER); // si no, al sacar la Luna de la capa 0 dejaría de verse
 
   scene.add(nightSkyGroup);
 }
@@ -1315,6 +1331,41 @@ function recomputeNightSkyPositions() {
 
   meteorCurrentInfo = activeMeteorShowerNow(when);
 }
+
+// Ayuda de depuración para la bóveda celeste/Luna -- se queda de forma permanente (a diferencia de
+// otras ayudas puntuales, esta es útil siempre que algo "no se ve" en el domo: fecha usada, si el
+// domo está activo/visible, altitud de la Luna sobre el horizonte y si el propio mesh está visible
+// y con qué opacidad). Todo lo de arriba vive dentro de un <script type="module">, así que sus
+// variables (sceneEnvironment, dayCycleClock, julianDateUTC...) no llegan solas a window ni las ve
+// la consola del navegador, aunque existan -- esta función sí se cuelga de window (se puede hacer
+// desde dentro del módulo) para poder inspeccionar el estado real desde fuera.
+// Uso: window.debugMoon() en la consola para arrancar el log cada segundo, window.debugMoon(false)
+// para pararlo.
+window.debugMoon = function (on) {
+  if (window.__moonDebugTimer) { clearInterval(window.__moonDebugTimer); window.__moonDebugTimer = null; }
+  if (on === false) return;
+  window.__moonDebugTimer = setInterval(function () {
+    var jd = julianDateUTC(nightSkyDateForNow());
+    var lat = sceneEnvironment.latitudeDeg != null ? sceneEnvironment.latitudeDeg : 40;
+    var lon = sceneEnvironment.skyLongitudeDeg != null ? sceneEnvironment.skyLongitudeDeg : 0;
+    var moonEq = moonEquatorialPosition(jd);
+    var hz = equatorialToAltAz(moonEq.raDeg, moonEq.decDeg, jd, lat, lon);
+    var dayLenSec = Math.max(10, (sceneEnvironment.dayDurationMin || 10) * 60);
+    console.log(
+      "sunMode:", sceneEnvironment.sunMode,
+      "| skyDateMode:", sceneEnvironment.skyDateMode,
+      "| dayDurationMin:", sceneEnvironment.dayDurationMin,
+      "| cicloSeg:", dayCycleClock.toFixed(1) + "/" + dayLenSec,
+      "| horaVirtual:", (dayCycleClock / dayLenSec * 24).toFixed(2),
+      "| nightSkyEnabled:", sceneEnvironment.nightSkyEnabled,
+      "| domoVisible:", !!(nightSkyGroup && nightSkyGroup.visible),
+      "| moonAltDeg:", hz.altDeg.toFixed(1),
+      "| moonMesh.visible:", !!(nightSkyMoonMesh && nightSkyMoonMesh.visible),
+      "| moonMesh.opacity:", nightSkyMoonMesh ? nightSkyMoonMesh.material.opacity.toFixed(2) : "n/a",
+      "| fase:", nightSkyLastPhaseName
+    );
+  }, 1000);
+};
 
 // Se llama cada frame (editor y Modo jugar), igual que updateSunCycle(). Recoloca el domo sobre
 // la camara (como un skybox) todos los frames, pero solo recalcula posiciones astronomicas una
@@ -8193,7 +8244,7 @@ function buildStandaloneGameRuntimeSrc(projectJson) {
     '  nightSkyMoonFallbackTexture = buildFallbackMoonTexture();',
     '  var moonMat = new THREE.MeshStandardMaterial({ map: nightSkyMoonFallbackTexture, color: 0xffffff, roughness: 1, metalness: 0, fog: false });',
     '  nightSkyMoonMesh = new THREE.Mesh(moonGeo, moonMat);',
-    '  nightSkyMoonMesh.layers.enable(NIGHT_SKY_LIGHT_LAYER);',
+    '  nightSkyMoonMesh.layers.set(NIGHT_SKY_LIGHT_LAYER);',
     '  if (PROJECT.environment.moonTextureBase64) {',
     '    (function () {',
     '      var img = new Image();',
@@ -8209,7 +8260,10 @@ function buildStandaloneGameRuntimeSrc(projectJson) {
     '  }',
     '  nightSkyMoonLight = new THREE.DirectionalLight(0xfff6e6, 1.2);',
     '  nightSkyMoonLight.layers.set(NIGHT_SKY_LIGHT_LAYER);',
-    '  nightSkyGroup.add(nightSkyMoonMesh, nightSkyMoonLight, nightSkyMoonLight.target);',
+    '  var nightSkyMoonFill = new THREE.AmbientLight(0x2a3550, 0.16);',
+    '  nightSkyMoonFill.layers.set(NIGHT_SKY_LIGHT_LAYER);',
+    '  nightSkyGroup.add(nightSkyMoonMesh, nightSkyMoonLight, nightSkyMoonLight.target, nightSkyMoonFill);',
+    '  camera.layers.enable(NIGHT_SKY_LIGHT_LAYER);',
     '',
     '  scene.add(nightSkyGroup);',
     '}',
@@ -10322,10 +10376,19 @@ function importProject(project) {
     camera.position.fromArray(project.camera.position);
     orbitControls.target.fromArray(project.camera.target);
   }
-  projectAudio = project.audio || { musicBase64: null, musicFileName: null, volume: 0.5 };
+  // OJO: clonar aquí, NO asignar la referencia tal cual. "project" puede ser (o compartir campos
+  // con) salaProyectoBase -- la "base" que se guarda para comparar en la fusión de guardados de
+  // sala (ver docblock de multi/proyecto.php). Si sceneEnvironment/projectAudio fueran el MISMO
+  // objeto que project.environment/project.audio, cada cambio del usuario en el panel (que muta
+  // sceneEnvironment.bgColor, .nightBgColor, .skyManualDate... en sitio) se filtraba también a la
+  // "base" antes de guardar -- así, al comparar base vs local para decidir qué fusionar, ambos
+  // salían idénticos (porque eran literalmente el mismo objeto) y el guardado creía que el usuario
+  // "no había tocado" el entorno, perdiendo silenciosamente sus cambios de color día/noche o de
+  // fecha de la bóveda celeste al sobrescribir una sala ya compartida. Clonar rompe ese alias.
+  projectAudio = structuredClone(project.audio) || { musicBase64: null, musicFileName: null, volume: 0.5 };
   document.getElementById("musicVolume").value = projectAudio.volume !== undefined ? projectAudio.volume : 0.5;
   updateMusicUI();
-  sceneEnvironment = project.environment || { bgColor: "#0a0b0f", groundColor: "#1c2029", horizonBase64: null, horizonFileName: null, groundSize: 40, fogFar: 60 };
+  sceneEnvironment = structuredClone(project.environment) || { bgColor: "#0a0b0f", groundColor: "#1c2029", horizonBase64: null, horizonFileName: null, groundSize: 40, fogFar: 60 };
   if (!sceneEnvironment.groundSize) sceneEnvironment.groundSize = 40; // compatibilidad con proyectos guardados antes de este campo
   if (!sceneEnvironment.fogFar) sceneEnvironment.fogFar = 60; // ídem, para proyectos guardados antes de la niebla configurable
   if (!sceneEnvironment.sunColor) sceneEnvironment.sunColor = "#ffffff"; // ídem, para proyectos guardados antes del Sol configurable
