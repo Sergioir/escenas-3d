@@ -3554,6 +3554,45 @@ function defaultHandleOffset(nodes, i, hkey) {
   return { x: (dx / dist) * len, y: (dy / dist) * len };
 }
 
+// Generadores de perfil regular (botones "Generar forma regular") -- para cuando arrastrar a mano no
+// da suficiente precisión (p. ej. un círculo perfecto). "Polígono recto" son solo N puntos repartidos
+// en el círculo, sin manecillas (lados rectos). "Círculo suave" usa la aproximación estándar de un
+// círculo con curvas Bézier cúbicas (la misma que usan Illustrator/Inkscape internamente): la longitud
+// de cada manecilla es radio * (4/3) * tan(PI / (2*N)), tangente a la circunferencia en cada nodo --
+// con N razonable (12+) el resultado es visualmente indistinguible de un círculo real.
+function generateRegularPolygonNodes(n, r) {
+  const nodes = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    nodes.push({ x: r * Math.cos(a), y: r * Math.sin(a), handleIn: null, handleOut: null });
+  }
+  return nodes;
+}
+function generateCircleNodes(n, r) {
+  const handleLen = r * (4 / 3) * Math.tan(Math.PI / (2 * n));
+  const nodes = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const cx = Math.cos(a), sy = Math.sin(a);
+    const x = r * cx, y = r * sy;
+    const tx = -sy, ty = cx; // tangente unitaria en sentido antihorario
+    nodes.push({ x, y, handleOut: { x: tx * handleLen, y: ty * handleLen }, handleIn: { x: -tx * handleLen, y: -ty * handleLen } });
+  }
+  return nodes;
+}
+// Generador de camino circular (botón "Generar camino circular/recorrido circular") -- mismo
+// razonamiento que el círculo de perfil de arriba, pero en el plano XZ (visto en planta) y sin
+// manecillas: el camino ya se suaviza solo con Catmull-Rom (buildPathCurve/buildPathCurve), así que
+// basta con repartir puntos justos en el círculo -- cuantos más puntos, más preciso.
+function generateCircularPathNodes(n, r, baseY) {
+  const nodes = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    nodes.push({ x: r * Math.cos(a), y: baseY || 0, z: r * Math.sin(a) });
+  }
+  return nodes;
+}
+
 function findClosestContourSegmentPoint(nodes, local) {
   if (!nodes || nodes.length < 2) return null;
   let best = null;
@@ -3683,6 +3722,7 @@ function onNodeEditPointerDown(e) {
     nodeEditSelIndex = ud.nodeEditIndex;
     orbitControls.enabled = false;
     rebuildNodeEditVisuals();
+    renderProps();
   }
 }
 
@@ -3718,6 +3758,7 @@ function onNodeEditPointerUp(e) {
     nodeEditDrag = null;
     orbitControls.enabled = true;
     pointerDownPos = null;
+    renderProps(); // refresca los campos numéricos con la posición final tras arrastrar
     return;
   }
   if (!pointerDownPos) return;
@@ -3734,11 +3775,13 @@ function onNodeEditPointerUp(e) {
       nodeEditSelIndex = ins.afterIndex + 1;
       rebuildExtrudeGeometry(nodeEditRec);
       rebuildNodeEditVisuals();
+      renderProps();
       return;
     }
   }
   nodeEditSelIndex = -1;
   rebuildNodeEditVisuals();
+  renderProps();
 }
 
 function deleteSelectedNode() {
@@ -3750,6 +3793,7 @@ function deleteSelectedNode() {
   nodeEditSelIndex = -1;
   rebuildExtrudeGeometry(nodeEditRec);
   rebuildNodeEditVisuals();
+  renderProps();
 }
 
 /* ---- Edición de camino en el visor: dibuja el trazado (recto o en bucle) que sigue la extrusión ----
@@ -3898,6 +3942,7 @@ function onPathEditPointerUp(e) {
     pathEditDrag = null;
     orbitControls.enabled = true;
     pointerDownPos = null;
+    renderProps(); // refresca X/Z con la posición final tras arrastrar
     return;
   }
   if (!pointerDownPos) return;
@@ -4605,6 +4650,7 @@ function iconFor(rec) {
   if (rec.interactive && rec.interactive.enabled) return "💬";
   if (rec.collider.kind === "zone") return "⚠️";
   if (rec.collider.kind === "solid") return "🧱";
+  if (rec.collider.kind === "solidMesh") return "🏯";
   if (rec.collider.kind === "ground") return "🟫";
   if (rec.kind === "light") return "💡";
   if (rec.kind === "camerapath") return "🎥";
@@ -4685,7 +4731,7 @@ function renderProps() {
 
     html += '<h3>Colisionador del conjunto</h3>';
     html += '<label class="field"><span>Aplicar tipo a todos los seleccionados</span><select id="groupColliderKind">' +
-      ['__nochange__:No cambiar (dejar cada uno como está)', 'none:Ninguno', 'volume:Volumen (referencia visual)', 'solid:Sólido (bloquea el paso)', 'ground:Suelo/rampa (se puede pisar)', 'character:Personaje (detector)', 'zone:Zona de riesgo (disparador)']
+      ['__nochange__:No cambiar (dejar cada uno como está)', 'none:Ninguno', 'volume:Volumen (referencia visual)', 'solid:Sólido (bloquea el paso)', 'solidMesh:Sólido -- malla real (piezas huecas o curvas)', 'ground:Suelo/rampa (se puede pisar)', 'character:Personaje (detector)', 'zone:Zona de riesgo (disparador)']
         .map((o) => { const [v, l] = o.split(":"); return '<option value="' + v + '">' + l + "</option>"; }).join("") +
       "</select></label>";
     html += '<p class="sub">Cada objeto conserva su propio tamaño de colisionador — solo cambia el tipo (p. ej. marcar todo un edificio agrupado como "Sólido" u "Suelo/rampa" de una vez).</p>';
@@ -4771,8 +4817,15 @@ function renderProps() {
       : 'Traza el recorrido que seguirá la cámara: cada punto es una posición por la que pasa. Se suaviza automáticamente.') + '</p>';
     html += '<label class="field" style="display:flex; align-items:center; gap:6px; margin-top:6px;"><input type="checkbox" id="pathClosed" style="width:auto;"' + (cpd.path.closed ? " checked" : "") + '> <span style="margin:0;">Camino cerrado (bucle)</span></label>';
     if (hasSel) {
-      html += '<label class="field"><span>Altura del punto seleccionado (Y)</span><input type="number" step="0.1" id="pathNodeY" value="' + cpd.path.nodes[pathEditSelIndex].y.toFixed(2) + '"></label>';
+      const psel2 = cpd.path.nodes[pathEditSelIndex];
+      html += '<div class="sub" style="margin-top:6px;">Punto ' + (pathEditSelIndex + 1) + ' de ' + cpd.path.nodes.length + '</div>';
+      html += '<div class="row3" style="grid-template-columns:1fr 1fr 1fr;"><label class="field"><span>X</span><input type="number" step="0.1" id="pathNodeX" value="' + psel2.x.toFixed(2) + '"></label><label class="field"><span>Altura (Y)</span><input type="number" step="0.1" id="pathNodeY" value="' + psel2.y.toFixed(2) + '"></label><label class="field"><span>Z</span><input type="number" step="0.1" id="pathNodeZ" value="' + psel2.z.toFixed(2) + '"></label></div>';
     }
+    html += '<div style="border:1px solid var(--border); border-radius:8px; padding:8px; margin-top:6px;">';
+    html += '<div class="sub" style="margin-bottom:4px;">Generar recorrido circular (sustituye el camino actual)</div>';
+    html += '<div class="row3" style="grid-template-columns:1fr 1fr;"><label class="field"><span>Nº de puntos</span><input type="number" step="1" min="6" max="64" id="pathGenCount" value="24"></label><label class="field"><span>Radio</span><input type="number" step="0.1" min="0.1" id="pathGenRadius" value="3"></label></div>';
+    html += '<button type="button" class="small" id="btnGenCircularPath" style="width:100%;">⭕ Generar recorrido circular</button>';
+    html += '</div>';
     html += '<h3>Reproducción</h3>';
     html += '<label class="field"><span>Duración del recorrido (segundos)</span><input type="number" step="0.5" min="0.5" id="cpDuration" value="' + (cpd.duration || 6) + '"></label>';
     html += '<label class="field"><span>Texto en pantalla durante el recorrido (opcional)</span><input type="text" id="cpCaption" value="' + esc(cpd.caption || "") + '"></label>';
@@ -4814,8 +4867,31 @@ function renderProps() {
     html += '<h3>Forma libre</h3>';
     html += '<button type="button" class="small primary" id="btnEditNodes" style="width:100%;">' + (nodeEditRec === rec ? "✅ Cerrar edición del perfil" : "✏️ Editar perfil (contorno)") + '</button>';
     html += '<p class="sub" style="margin-top:4px;">' + (nodeEditRec === rec
-      ? 'Clic en un tramo del contorno para añadir un nodo · arrastra un nodo (esfera blanca/amarilla) para moverlo · al seleccionar un nodo aparecen dos manecillas naranjas tenues junto a él: arrástralas hacia fuera para curvar ese tramo (Bézier), o arrástralas de vuelta al nodo para quitar la curva · con un nodo seleccionado, Supr lo borra (mínimo 3 nodos).'
+      ? 'Clic en un tramo del contorno para añadir un nodo · arrastra un nodo (esfera blanca/amarilla) para moverlo · al seleccionar un nodo aparecen dos manecillas naranjas tenues junto a él: arrástralas hacia fuera para curvar ese tramo (Bézier), o arrástralas de vuelta al nodo para quitar la curva · con un nodo seleccionado, Supr lo borra (mínimo 3 nodos) · o ajusta sus valores a mano abajo, con precisión numérica.'
       : 'El "perfil" es la silueta 2D de esta pieza (lo que ves al mirarla de frente). Edítalo para darle forma antes de extruirlo.') + '</p>';
+
+    if (nodeEditRec === rec && nodeEditSelIndex >= 0 && rec.extrudeData.nodes[nodeEditSelIndex]) {
+      const nsel = rec.extrudeData.nodes[nodeEditSelIndex];
+      html += '<div style="border:1px solid var(--border); border-radius:8px; padding:8px; margin-top:6px;">';
+      html += '<div class="sub" style="margin-bottom:4px;">Nodo ' + (nodeEditSelIndex + 1) + ' de ' + rec.extrudeData.nodes.length + '</div>';
+      html += '<div class="row3" style="grid-template-columns:1fr 1fr;"><label class="field"><span>Posición X</span><input type="number" step="0.05" id="nodePosX" value="' + nsel.x.toFixed(3) + '"></label><label class="field"><span>Posición Y</span><input type="number" step="0.05" id="nodePosY" value="' + nsel.y.toFixed(3) + '"></label></div>';
+      ["handleIn", "handleOut"].forEach((hkey) => {
+        const label = hkey === "handleIn" ? "Curvar entrada" : "Curvar salida";
+        const h = nsel[hkey];
+        html += '<label class="field" style="display:flex; align-items:center; gap:6px; margin-top:6px;"><input type="checkbox" class="nodeHandleOn" data-handle="' + hkey + '" style="width:auto;"' + (h ? " checked" : "") + '> <span style="margin:0;">' + label + '</span></label>';
+        if (h) {
+          html += '<div class="row3" style="grid-template-columns:1fr 1fr;"><label class="field"><span>Manecilla X</span><input type="number" step="0.02" class="nodeHandleVal" data-handle="' + hkey + '" data-axis="x" value="' + h.x.toFixed(3) + '"></label><label class="field"><span>Manecilla Y</span><input type="number" step="0.02" class="nodeHandleVal" data-handle="' + hkey + '" data-axis="y" value="' + h.y.toFixed(3) + '"></label></div>';
+        }
+      });
+      html += '</div>';
+    }
+
+    html += '<div style="border:1px solid var(--border); border-radius:8px; padding:8px; margin-top:8px;">';
+    html += '<div class="sub" style="margin-bottom:4px;">Generar forma regular (sustituye el perfil actual)</div>';
+    html += '<div class="row3" style="grid-template-columns:1fr 1fr;"><label class="field"><span>Lados / segmentos</span><input type="number" step="1" min="3" max="64" id="shapeGenSides" value="24"></label><label class="field"><span>Radio</span><input type="number" step="0.05" min="0.05" id="shapeGenRadius" value="0.5"></label></div>';
+    html += '<div class="flexRow"><button type="button" class="small grow" id="btnGenPolygon">⬡ Polígono recto</button><button type="button" class="small grow" id="btnGenCircle">⭕ Círculo suave</button></div>';
+    html += '<p class="sub">"Círculo suave" usa manecillas Bézier calculadas (no a mano) para un círculo perfectamente redondo -- cuantos más lados, más preciso.</p>';
+    html += '</div>';
 
     const hasPath = !!(rec.extrudeData.path && rec.extrudeData.path.nodes && rec.extrudeData.path.nodes.length >= 2);
     if (!hasPath) {
@@ -4828,11 +4904,18 @@ function renderProps() {
       html += '<button type="button" class="small primary" id="btnEditPath" style="width:100%; margin-top:8px;">' + (pathEditRec === rec ? "✅ Cerrar edición del camino" : "🛤️ Editar camino") + '</button>';
       html += '<label class="field" style="display:flex; align-items:center; gap:6px; margin-top:6px;"><input type="checkbox" id="pathClosed" style="width:auto;"' + (rec.extrudeData.path.closed ? " checked" : "") + '> <span style="margin:0;">Camino cerrado (bucle -- para rodear un valle)</span></label>';
       if (pathEditRec === rec && pathEditSelIndex >= 0 && rec.extrudeData.path.nodes[pathEditSelIndex]) {
-        html += '<label class="field"><span>Altura del punto seleccionado (Y)</span><input type="number" step="0.1" id="pathNodeY" value="' + rec.extrudeData.path.nodes[pathEditSelIndex].y.toFixed(2) + '"></label>';
+        const psel = rec.extrudeData.path.nodes[pathEditSelIndex];
+        html += '<div class="sub" style="margin-top:6px;">Punto ' + (pathEditSelIndex + 1) + ' de ' + rec.extrudeData.path.nodes.length + '</div>';
+        html += '<div class="row3" style="grid-template-columns:1fr 1fr 1fr;"><label class="field"><span>X</span><input type="number" step="0.1" id="pathNodeX" value="' + psel.x.toFixed(2) + '"></label><label class="field"><span>Altura (Y)</span><input type="number" step="0.1" id="pathNodeY" value="' + psel.y.toFixed(2) + '"></label><label class="field"><span>Z</span><input type="number" step="0.1" id="pathNodeZ" value="' + psel.z.toFixed(2) + '"></label></div>';
       }
+      html += '<div style="border:1px solid var(--border); border-radius:8px; padding:8px; margin-top:6px;">';
+      html += '<div class="sub" style="margin-bottom:4px;">Generar camino circular (sustituye el camino actual)</div>';
+      html += '<div class="row3" style="grid-template-columns:1fr 1fr;"><label class="field"><span>Nº de puntos</span><input type="number" step="1" min="6" max="64" id="pathGenCount" value="24"></label><label class="field"><span>Radio</span><input type="number" step="0.1" min="0.1" id="pathGenRadius" value="1.5"></label></div>';
+      html += '<button type="button" class="small" id="btnGenCircularPath" style="width:100%;">⭕ Generar camino circular</button>';
+      html += '</div>';
       html += '<button type="button" class="small" id="btnRemovePath" style="width:100%; margin-top:6px;">❌ Quitar camino (volver a extrusión recta)</button>';
       html += '<p class="sub">' + (pathEditRec === rec
-        ? 'Clic para añadir puntos del camino (visto en planta, sobre el plano horizontal de la pieza) · arrastra un punto (esfera verde/amarilla) para moverlo · usa el campo "Altura" de arriba para su elevación · Supr borra el punto seleccionado (mínimo 2).'
+        ? 'Clic para añadir puntos del camino (visto en planta, sobre el plano horizontal de la pieza) · arrastra un punto (esfera verde/amarilla) para moverlo · usa los campos de arriba para su posición exacta · Supr borra el punto seleccionado (mínimo 2).'
         : 'El camino define la ruta que sigue la extrusión. Actívalo y edítalo para trazarlo.') + '</p>';
     }
   }
@@ -4863,13 +4946,15 @@ function renderProps() {
 
   html += '<h3>Colisionador</h3>';
   html += '<label class="field"><span>Tipo</span><select id="colliderKind">' +
-    ['none:Ninguno', 'volume:Volumen (referencia visual)', 'solid:Sólido (bloquea el paso)', 'ground:Suelo/rampa (se puede pisar)', 'character:Personaje (detector)', 'zone:Zona de riesgo (disparador)']
+    ['none:Ninguno', 'volume:Volumen (referencia visual)', 'solid:Sólido (bloquea el paso)', 'solidMesh:Sólido -- malla real (piezas huecas o curvas)', 'ground:Suelo/rampa (se puede pisar)', 'character:Personaje (detector)', 'zone:Zona de riesgo (disparador)']
       .map((o) => { const [v, l] = o.split(":"); return '<option value="' + v + '"' + (rec.collider.kind === v ? " selected" : "") + ">" + l + "</option>"; }).join("") +
     "</select></label>";
   html += '<div id="colliderExtra" style="display:' + (rec.collider.kind === "none" ? "none" : "block") + ';">';
-  if (rec.collider.kind === "solid" || rec.collider.kind === "ground") {
+  if (rec.collider.kind === "solid" || rec.collider.kind === "solidMesh" || rec.collider.kind === "ground") {
     html += '<p class="sub">' + (rec.collider.kind === "solid"
-      ? 'El bloqueo usa el tamaño real de la malla (se adapta automáticamente si escalas o rotas el objeto con el gizmo) — no hace falta fijar un tamaño a mano.'
+      ? 'El bloqueo usa la CAJA que envuelve la malla (se adapta automáticamente si escalas o rotas el objeto con el gizmo) — barato y fiable para piezas macizas (muebles, muros rectos...), pero una pieza HUECA o curva (una cúpula, una choza, un túnel) quedaría sellada por completo, como si fuera maciza.'
+      : rec.collider.kind === "solidMesh"
+      ? 'El bloqueo sigue la FORMA REAL de la malla (varios rayos en abanico, no una caja) — algo más costoso, pero permite entrar y caminar dentro de piezas huecas o curvas (cúpulas, chozas, túneles) chocando solo con sus paredes de verdad. Para piezas macizas normales, usa mejor "Sólido" (más barato).'
       : 'El personaje se apoya sobre la superficie real de la malla (sirve para rampas, escaleras o pisos superiores) — no bloquea el paso horizontal, solo sostiene verticalmente. No hace falta fijar un tamaño a mano.') + '</p>';
   } else {
     html += '<label class="field"><span>Tamaño del colisionador (x, y, z)</span><div class="row3">' +
@@ -5665,6 +5750,66 @@ function wirePropsEvents(rec) {
   if (btnEditNodes) btnEditNodes.addEventListener("click", () => {
     if (nodeEditRec === rec) exitNodeEditMode(); else enterNodeEditMode(rec);
   });
+  // Campos numéricos del nodo de perfil seleccionado -- alternativa precisa a arrastrar a mano (ver
+  // "ECHO DE MENOS MÁS PRECISIÓN EN LA BÉZIER" -- arrastrar con el ratón nunca da un valor exacto).
+  const nodePosX = document.getElementById("nodePosX");
+  const nodePosY = document.getElementById("nodePosY");
+  function applyNodePos() {
+    if (nodeEditRec !== rec || nodeEditSelIndex < 0) return;
+    const node = rec.extrudeData.nodes[nodeEditSelIndex];
+    if (!node) return;
+    if (nodePosX) node.x = parseFloat(nodePosX.value) || 0;
+    if (nodePosY) node.y = parseFloat(nodePosY.value) || 0;
+    rebuildExtrudeGeometry(rec);
+    rebuildNodeEditVisuals();
+  }
+  if (nodePosX) nodePosX.addEventListener("input", applyNodePos);
+  if (nodePosY) nodePosY.addEventListener("input", applyNodePos);
+  document.querySelectorAll(".nodeHandleOn").forEach((cb) => {
+    cb.addEventListener("change", (e) => {
+      if (nodeEditRec !== rec || nodeEditSelIndex < 0) return;
+      const node = rec.extrudeData.nodes[nodeEditSelIndex];
+      if (!node) return;
+      const hkey = e.target.dataset.handle;
+      node[hkey] = e.target.checked ? defaultHandleOffset(rec.extrudeData.nodes, nodeEditSelIndex, hkey) : null;
+      rebuildExtrudeGeometry(rec);
+      rebuildNodeEditVisuals();
+      renderProps();
+    });
+  });
+  document.querySelectorAll(".nodeHandleVal").forEach((inp) => {
+    inp.addEventListener("input", (e) => {
+      if (nodeEditRec !== rec || nodeEditSelIndex < 0) return;
+      const node = rec.extrudeData.nodes[nodeEditSelIndex];
+      const h = node && node[e.target.dataset.handle];
+      if (!h) return;
+      h[e.target.dataset.axis] = parseFloat(e.target.value) || 0;
+      rebuildExtrudeGeometry(rec);
+      rebuildNodeEditVisuals();
+    });
+  });
+  const btnGenPolygon = document.getElementById("btnGenPolygon");
+  if (btnGenPolygon) btnGenPolygon.addEventListener("click", () => {
+    const n = Math.max(3, Math.min(64, parseInt(document.getElementById("shapeGenSides").value, 10) || 24));
+    const r = Math.max(0.05, parseFloat(document.getElementById("shapeGenRadius").value) || 0.5);
+    pushUndo();
+    rec.extrudeData.nodes = generateRegularPolygonNodes(n, r);
+    nodeEditSelIndex = -1;
+    rebuildExtrudeGeometry(rec);
+    if (nodeEditRec === rec) rebuildNodeEditVisuals();
+    renderProps();
+  });
+  const btnGenCircle = document.getElementById("btnGenCircle");
+  if (btnGenCircle) btnGenCircle.addEventListener("click", () => {
+    const n = Math.max(3, Math.min(64, parseInt(document.getElementById("shapeGenSides").value, 10) || 24));
+    const r = Math.max(0.05, parseFloat(document.getElementById("shapeGenRadius").value) || 0.5);
+    pushUndo();
+    rec.extrudeData.nodes = generateCircleNodes(n, r);
+    nodeEditSelIndex = -1;
+    rebuildExtrudeGeometry(rec);
+    if (nodeEditRec === rec) rebuildNodeEditVisuals();
+    renderProps();
+  });
   const extrudeDepth = document.getElementById("extrudeDepth");
   if (extrudeDepth) extrudeDepth.addEventListener("input", (e) => {
     rec.extrudeData.depth = Math.max(0.02, parseFloat(e.target.value) || 0.3);
@@ -5699,6 +5844,14 @@ function wirePropsEvents(rec) {
     pathOwnerRebuild(rec);
     if (pathEditRec === rec) rebuildPathEditVisuals();
   });
+  const pathNodeX = document.getElementById("pathNodeX");
+  if (pathNodeX) pathNodeX.addEventListener("input", (e) => {
+    if (pathEditRec === rec && pathEditSelIndex >= 0 && pathOwnerPath(rec).nodes[pathEditSelIndex]) {
+      pathOwnerPath(rec).nodes[pathEditSelIndex].x = parseFloat(e.target.value) || 0;
+      pathOwnerRebuild(rec);
+      rebuildPathEditVisuals();
+    }
+  });
   const pathNodeY = document.getElementById("pathNodeY");
   if (pathNodeY) pathNodeY.addEventListener("input", (e) => {
     if (pathEditRec === rec && pathEditSelIndex >= 0 && pathOwnerPath(rec).nodes[pathEditSelIndex]) {
@@ -5706,6 +5859,29 @@ function wirePropsEvents(rec) {
       pathOwnerRebuild(rec);
       rebuildPathEditVisuals();
     }
+  });
+  const pathNodeZ = document.getElementById("pathNodeZ");
+  if (pathNodeZ) pathNodeZ.addEventListener("input", (e) => {
+    if (pathEditRec === rec && pathEditSelIndex >= 0 && pathOwnerPath(rec).nodes[pathEditSelIndex]) {
+      pathOwnerPath(rec).nodes[pathEditSelIndex].z = parseFloat(e.target.value) || 0;
+      pathOwnerRebuild(rec);
+      rebuildPathEditVisuals();
+    }
+  });
+  const btnGenCircularPath = document.getElementById("btnGenCircularPath");
+  if (btnGenCircularPath) btnGenCircularPath.addEventListener("click", () => {
+    const path = pathOwnerPath(rec);
+    if (!path) return;
+    const n = Math.max(6, Math.min(64, parseInt(document.getElementById("pathGenCount").value, 10) || 24));
+    const r = Math.max(0.1, parseFloat(document.getElementById("pathGenRadius").value) || 1.5);
+    const baseY = path.nodes.length ? path.nodes[0].y : 0;
+    pushUndo();
+    path.nodes = generateCircularPathNodes(n, r, baseY);
+    path.closed = true;
+    pathEditSelIndex = -1;
+    pathOwnerRebuild(rec);
+    if (pathEditRec === rec) rebuildPathEditVisuals();
+    renderProps();
   });
   const btnRemovePath = document.getElementById("btnRemovePath");
   if (btnRemovePath) btnRemovePath.addEventListener("click", () => {
@@ -7958,6 +8134,39 @@ function collidesSolidAt(x, y, z, half, excludeId) {
   return false;
 }
 
+const wallMeshRaycaster = new THREE.Raycaster();
+// "Sólido -- malla real" (solidMesh): a diferencia de "Sólido" (caja delimitadora completa, que
+// sellaría el interior de una pieza hueca o curva como una cúpula/choza/túnel), este colisionador
+// choca contra la SUPERFICIE real de la malla -- lanzando 3 rayos en abanico (centro + dos bordes
+// del ancho del jugador) en la dirección del movimiento que se está probando, la misma técnica ya
+// usada para que la cámara en 3a persona no atraviese paredes (ver más abajo, "Cámara adaptativa").
+// dx/dz: el desplazamiento de ESTE eje que se está probando (el otro va a 0, igual que hace
+// collidesSolidAt con nx/nz por separado -- así se puede deslizar por la pared en diagonal).
+function collidesSolidMeshAt(fromX, y, fromZ, half, dx, dz, excludeId) {
+  const dist = Math.hypot(dx, dz);
+  if (dist < 1e-6) return false;
+  const eps = 0.05;
+  const dirX = dx / dist, dirZ = dz / dist;
+  const rightX = -dirZ, rightZ = dirX; // perpendicular horizontal, para el abanico
+  const far = dist + Math.max(half.x, half.z) + 0.05;
+  const chestY = y + half.y;
+  for (const rec of sceneObjects.values()) {
+    if (rec.id === excludeId) continue;
+    if (rec.collider.kind !== "solidMesh") continue;
+    const oBox = new THREE.Box3().setFromObject(rec.object3D);
+    if (chestY >= oBox.max.y - eps) continue; // de pie encima, no bloquea (igual que "Sólido")
+    if (oBox.max.y < y - eps || oBox.min.y > y + half.y * 2 + eps) continue; // fuera de rango vertical: descarte rápido
+    for (const off of [0, 1, -1]) {
+      const originX = fromX + rightX * off * half.x;
+      const originZ = fromZ + rightZ * off * half.x;
+      wallMeshRaycaster.set(new THREE.Vector3(originX, chestY, originZ), new THREE.Vector3(dirX, 0, dirZ));
+      wallMeshRaycaster.far = far;
+      if (wallMeshRaycaster.intersectObject(rec.object3D, true).length) return true;
+    }
+  }
+  return false;
+}
+
 const groundRaycaster = new THREE.Raycaster();
 const cameraRaycaster = new THREE.Raycaster();
 const shotRaycaster = new THREE.Raycaster(); // rayo de "disparo a distancia": desde la cámara hacia donde mira la mira (crosshair)
@@ -7971,7 +8180,7 @@ function computeGroundHit(x, z, fromY, excludeId) {
   const targets = [ground];
   for (const rec of sceneObjects.values()) {
     if (rec.id === excludeId) continue;
-    if (rec.collider.kind === "solid" || rec.collider.kind === "ground") targets.push(rec.object3D);
+    if (rec.collider.kind === "solid" || rec.collider.kind === "solidMesh" || rec.collider.kind === "ground") targets.push(rec.object3D);
   }
   const hits = groundRaycaster.intersectObjects(targets, true);
   return hits.length ? { y: hits[0].point.y, object: hits[0].object } : null;
@@ -8015,10 +8224,11 @@ function resolveMoveWithCollision(player, dir, dist) {
   const half = { x: size.x / 2, y: size.y / 2, z: size.z / 2 };
   const pos = player.object3D.position;
   const y = pos.y;
-  const nx = pos.x + dir.x * dist;
-  if (!collidesSolidAt(nx, y, pos.z, half, player.id) && computeHeadClearance(nx, pos.z, y, player.id) >= size.y) pos.x = nx;
-  const nz = pos.z + dir.z * dist;
-  if (!collidesSolidAt(pos.x, y, nz, half, player.id) && computeHeadClearance(pos.x, nz, y, player.id) >= size.y) pos.z = nz;
+  const dx = dir.x * dist, dz = dir.z * dist;
+  const nx = pos.x + dx;
+  if (!collidesSolidAt(nx, y, pos.z, half, player.id) && !collidesSolidMeshAt(pos.x, y, pos.z, half, dx, 0, player.id) && computeHeadClearance(nx, pos.z, y, player.id) >= size.y) pos.x = nx;
+  const nz = pos.z + dz;
+  if (!collidesSolidAt(pos.x, y, nz, half, player.id) && !collidesSolidMeshAt(pos.x, y, pos.z, half, 0, dz, player.id) && computeHeadClearance(pos.x, nz, y, player.id) >= size.y) pos.z = nz;
 }
 
 // "Empujón" ligero contra los avatares remotos del multijugador -- no es un motor de físicas real
@@ -8215,7 +8425,9 @@ function updatePlayMode(dt) {
         // "ground" incluido a propósito: los techos/pisos superiores suelen ser Planos con
         // colisionador Suelo/rampa (no "Sólido"), y si no se incluyen aquí la cámara los
         // atraviesa igual que le pasaba antes a la cabeza del jugador con las escaleras.
-        if (rec.collider.kind === "solid" || rec.collider.kind === "ground") camTargets.push(rec.object3D);
+        // "solidMesh" también, para que la cámara en 3a persona tampoco atraviese las paredes
+        // reales de una pieza hueca/curva (cúpula, choza, túnel).
+        if (rec.collider.kind === "solid" || rec.collider.kind === "solidMesh" || rec.collider.kind === "ground") camTargets.push(rec.object3D);
       }
       // Un único rayo por el centro se cuela por rendijas (el hueco de una escalera en el
       // techo, el remate de una esquina...). Lanzamos un pequeño abanico de rayos alrededor
@@ -11658,15 +11870,42 @@ function buildStandaloneGameRuntimeSrc(projectJson) {
     '  });',
     '  return hit;',
     '}',
+    'var wallMeshRaycaster = new THREE.Raycaster();',
+    'function collidesSolidMeshAt(fromX, y, fromZ, half, dx, dz, excludeId){',
+    '  var dist = Math.hypot(dx, dz);',
+    '  if(dist < 1e-6) return false;',
+    '  var eps = 0.05;',
+    '  var dirX = dx/dist, dirZ = dz/dist;',
+    '  var rightX = -dirZ, rightZ = dirX;',
+    '  var far = dist + Math.max(half.x, half.z) + 0.05;',
+    '  var chestY = y + half.y;',
+    '  var hit = false;',
+    '  sceneObjects.forEach(function(rec){',
+    '    if(hit || rec.id===excludeId || rec.collider.kind!=="solidMesh") return;',
+    '    var oBox = new THREE.Box3().setFromObject(rec.object3D);',
+    '    if(chestY >= oBox.max.y - eps) return;',
+    '    if(oBox.max.y < y - eps || oBox.min.y > y + half.y*2 + eps) return;',
+    '    for(var i=0; i<3 && !hit; i++){',
+    '      var off = [0,1,-1][i];',
+    '      var originX = fromX + rightX*off*half.x;',
+    '      var originZ = fromZ + rightZ*off*half.x;',
+    '      wallMeshRaycaster.set(new THREE.Vector3(originX, chestY, originZ), new THREE.Vector3(dirX, 0, dirZ));',
+    '      wallMeshRaycaster.far = far;',
+    '      if(wallMeshRaycaster.intersectObject(rec.object3D, true).length) hit = true;',
+    '    }',
+    '  });',
+    '  return hit;',
+    '}',
     'function resolveMoveWithCollision(player, dir, dist){',
     '  var size = player.collider.size || { x:0.5, y:1.2, z:0.5 };',
     '  var half = { x:size.x/2, y:size.y/2, z:size.z/2 };',
     '  var pos = player.object3D.position;',
     '  var y = pos.y;',
-    '  var nx = pos.x + dir.x*dist;',
-    '  if(!collidesSolidAt(nx, y, pos.z, half, player.id) && computeHeadClearance(nx, pos.z, y, player.id) >= size.y) pos.x = nx;',
-    '  var nz = pos.z + dir.z*dist;',
-    '  if(!collidesSolidAt(pos.x, y, nz, half, player.id) && computeHeadClearance(pos.x, nz, y, player.id) >= size.y) pos.z = nz;',
+    '  var dx = dir.x*dist, dz = dir.z*dist;',
+    '  var nx = pos.x + dx;',
+    '  if(!collidesSolidAt(nx, y, pos.z, half, player.id) && !collidesSolidMeshAt(pos.x, y, pos.z, half, dx, 0, player.id) && computeHeadClearance(nx, pos.z, y, player.id) >= size.y) pos.x = nx;',
+    '  var nz = pos.z + dz;',
+    '  if(!collidesSolidAt(pos.x, y, nz, half, player.id) && !collidesSolidMeshAt(pos.x, y, pos.z, half, 0, dz, player.id) && computeHeadClearance(pos.x, nz, y, player.id) >= size.y) pos.z = nz;',
     '}',
     'var groundRaycaster = new THREE.Raycaster();',
     'var cameraRaycaster = new THREE.Raycaster();',
@@ -11692,7 +11931,7 @@ function buildStandaloneGameRuntimeSrc(projectJson) {
     '  var targets = [ground];',
     '  sceneObjects.forEach(function(rec){',
     '    if(rec.id===excludeId) return;',
-    '    if(rec.collider.kind==="solid" || rec.collider.kind==="ground") targets.push(rec.object3D);',
+    '    if(rec.collider.kind==="solid" || rec.collider.kind==="solidMesh" || rec.collider.kind==="ground") targets.push(rec.object3D);',
     '  });',
     '  var hits = groundRaycaster.intersectObjects(targets, true);',
     '  return hits.length ? { y:hits[0].point.y, object:hits[0].object } : null;',
@@ -11817,7 +12056,7 @@ function buildStandaloneGameRuntimeSrc(projectJson) {
     '      var camTargets = [];',
     '      sceneObjects.forEach(function(rec){',
     '        if(rec.id===playerRecordId) return;',
-    '        if(rec.collider.kind==="solid" || rec.collider.kind==="ground") camTargets.push(rec.object3D);',
+    '        if(rec.collider.kind==="solid" || rec.collider.kind==="solidMesh" || rec.collider.kind==="ground") camTargets.push(rec.object3D);',
     '      });',
     '      var camUpRef = Math.abs(camDir.y) > 0.98 ? new THREE.Vector3(1,0,0) : new THREE.Vector3(0,1,0);',
     '      var camRight = new THREE.Vector3().crossVectors(camDir, camUpRef).normalize();',
