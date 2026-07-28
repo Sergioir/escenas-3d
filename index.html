@@ -9282,6 +9282,7 @@ function speedValue() { return parseFloat(document.getElementById("speedSelect")
 
 let lastFrameTime = performance.now();
 function tick() {
+  try{
   const nowFrame = performance.now();
   const dt = clamp((nowFrame - lastFrameTime) / 1000, 0, 0.05);
   lastFrameTime = nowFrame;
@@ -9327,7 +9328,7 @@ function tick() {
     updateSpins(dt);
     updateOneShotClips(dt);
   }
-  renderer.render(scene, camera);
+  renderer.render(scene, camera);}catch (err){console.log("Error Don Claude 3D en función tick. ",err)}
   requestAnimationFrame(tick);
 }
 
@@ -13128,7 +13129,7 @@ function buildStandaloneGameRuntimeSrc(projectJson) {
     '}',
     '',
     'var lastT = performance.now();',
-    'function tick(){',
+    'function tick(){try{',
     '  var now = performance.now();',
     '  var dt = clamp((now-lastT)/1000, 0, 0.05);',
     '  lastT = now;',
@@ -13142,7 +13143,7 @@ function buildStandaloneGameRuntimeSrc(projectJson) {
     '  if(playerRecordId) updatePlayer(dt);',
     '  else { var prevClockTime2 = npcClockTime; npcClockTime += dt; if(timelineDuration>0.02 && npcClockTime>timelineDuration) npcClockTime = npcClockTime % timelineDuration; fireDueChainTriggers(prevClockTime2, npcClockTime); applyTimeToScene(npcClockTime, null); }',
     '  updateSkyPointer(dt, skyPointerActivo);',
-    '  renderer.render(scene, camera);',
+    '  renderer.render(scene, camera);}catch(err){console.log("Don Claude 3D error en función tick. ",err)}',
     '  requestAnimationFrame(tick);',
     '}',
     '',
